@@ -1,0 +1,22 @@
+# node
+node_modules/
+npm-debug.log*
+yarn.lock
+.pnpm-debug.log*
+
+# build outputs or uploads
+uploads/
+hello_noir_compile/
+hello_noir_proof/
+
+# test zips or binaries
+*.zip
+*.gz
+
+# IDE / OS files
+.DS_Store
+*.swp
+*.swo
+
+# dotenv / secrets
+.env
