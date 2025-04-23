@@ -45,7 +45,7 @@ const run = (cmd, args, cwd) => new Promise((resolve, reject) => {
     shell: true,
     env: {
       ...process.env,
-      PATH: process.env.PATH + ':/home/ubuntu/.nargo/bin'
+      PATH: process.env.PATH + ':/home/ubuntu/.nargo/bin:/home/ubuntu/.bb'
     }
   });
   let stderrLog = '';
