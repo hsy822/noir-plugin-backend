@@ -20,3 +20,6 @@ hello_noir_proof/
 
 # dotenv / secrets
 .env
+
+# test
+index.html

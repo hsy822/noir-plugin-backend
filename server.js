@@ -40,7 +40,14 @@ app.use((err, req, res, next) => {
 
 // Execute a shell command in a child process
 const run = (cmd, args, cwd) => new Promise((resolve, reject) => {
-  const proc = spawn(cmd, args, { cwd, shell: true });
+  const proc = spawn(cmd, args, {
+    cwd,
+    shell: true,
+    env: {
+      ...process.env,
+      PATH: process.env.PATH + ':/home/ubuntu/.nargo/bin'
+    }
+  });
   let stderrLog = '';
 
   proc.stdout.on('data', (data) => console.log(`[${cmd}] stdout:`, data.toString().trim()));
@@ -113,6 +120,37 @@ const extractZipStripRoot = async (zipBuffer, targetPath) => {
 // Health check route
 app.get('/', (req, res) => {
   res.send('Noir backend is running');
+});
+
+// Compile
+app.post('/compile', upload.single('file'), async (req, res) => {
+  const requestId = uuidv4();
+  const zipBuffer = req.file?.buffer;
+  const projectPath = path.join(__dirname, 'uploads', requestId);
+
+  if (!zipBuffer) return res.status(400).json({ success: false, error: 'No file provided' });
+
+  try {
+    await fs.mkdirp(projectPath);
+    await extractZipStripRoot(zipBuffer, projectPath);
+    await run('nargo', ['compile'], projectPath);
+    await run('nargo', ['check'], projectPath);
+
+    const targetDir = path.join(projectPath, 'target');
+    const files = await fs.readdir(targetDir);
+    const jsonFile = files.find(f => f.endsWith('.json'));
+    if (!jsonFile) throw new Error('Compiled JSON file not found');
+
+    const json = await fs.readFile(path.join(targetDir, jsonFile), 'utf8');
+    const prover = await fs.readFile(path.join(projectPath, 'Prover.toml'), 'utf8');
+
+    res.json({ success: true, requestId, compiledJson: json, proverToml: prover });
+  } catch (e) {
+    console.error('[compile] Error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
+  }
 });
 
 // Main API to compile, prove, and generate Solidity verifier
