@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 dotenv.config();
 
+import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs-extra';
 import path from 'path';
@@ -25,7 +26,11 @@ const upload = multer({
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
+}));
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ success: false, error: 'Uploaded file is too large (max 5MB).' });
