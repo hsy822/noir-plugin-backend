@@ -12,15 +12,48 @@ import { v4 as uuidv4 } from 'uuid';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { WebSocketServer } from 'ws';
 
-// Environment setup
+// ---------------- WebSocket setup ----------------
+
+const wss = new WebSocketServer({ port: 8082 });
+const wsClients = new Map();
+
+wss.on('connection', (ws) => {
+  ws.on('message', (msg) => {
+    try {
+      const { requestId } = JSON.parse(msg);
+      if (requestId) {
+        wsClients.set(requestId, ws);
+        ws.send(JSON.stringify({ logMsg: `[WS] Bound to requestId: ${requestId}` }));
+      }
+    } catch (e) {
+      console.error('[WS] Invalid message from client:', msg);
+    }
+  });
+
+  ws.on('close', () => {
+    for (const [key, client] of wsClients.entries()) {
+      if (client === ws) wsClients.delete(key);
+    }
+  });
+});
+
+function sendLog(requestId, msg) {
+  const ws = wsClients.get(requestId);
+  if (ws && ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify({ logMsg: msg }));
+  }
+}
+
+// ---------------- Env & Upload ----------------
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Setup for in-memory file upload
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
 const app = express();
@@ -38,42 +71,60 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
-// Execute a shell command in a child process
-const run = (cmd, args, cwd) => new Promise((resolve, reject) => {
+// ---------------- Run command ----------------
+
+const run = (cmd, args, cwd, requestId) => new Promise((resolve, reject) => {
+  const isMac = process.platform === 'darwin';
   const proc = spawn(cmd, args, {
     cwd,
     shell: true,
     env: {
       ...process.env,
-      PATH: process.env.PATH + ':/home/ubuntu/.nargo/bin:/home/ubuntu/.bb'
+      PATH: [
+        process.env.PATH,
+        isMac
+          ? `${process.env.HOME}/.nargo/bin:${process.env.HOME}/.bb`
+          : '/home/ubuntu/.nargo/bin:/home/ubuntu/.bb'
+      ].join(':')
     }
   });
+
   let stderrLog = '';
 
-  proc.stdout.on('data', (data) => console.log(`[${cmd}] stdout:`, data.toString().trim()));
+  proc.stdout.on('data', (data) => {
+    const log = data.toString().trim();
+    console.log(`[${cmd}] stdout:`, log);
+    if (requestId) sendLog(requestId, `[stdout] ${log}`);
+  });
+
   proc.stderr.on('data', (data) => {
     const log = data.toString().trim();
+    console.error(`[${cmd}] stderr:`, log);
+    if (requestId) sendLog(requestId, `[stderr] ${log}`);
     stderrLog += log + '\n';
-    if (log.toLowerCase().includes('error')) {
-      console.error(`[${cmd}] error:`, log);
-    } else {
-      console.warn(`[${cmd}] warn:`, log);
-    }
   });
 
   proc.on('close', (code) => {
     if (code === 0) {
-      console.log(`[${cmd}] completed successfully`);
+      const successMsg = `[${cmd}] Completed successfully`;
+      console.log(successMsg);
+      if (requestId) sendLog(requestId, successMsg);
       resolve();
     } else {
-      reject(new Error(`[${cmd}] failed with code ${code}\n${stderrLog}`));
+      const errMsg = `[${cmd}] Failed with code ${code}`;
+      if (requestId) sendLog(requestId, errMsg);
+      reject(new Error(errMsg + '\n' + stderrLog));
     }
   });
 
-  proc.on('error', (error) => reject(error));
+  proc.on('error', (error) => {
+    if (requestId) sendLog(requestId, `[${cmd}] error: ${error.message}`);
+    reject(error);
+  });
 });
 
-// Extract zip archive and remove common root folder
+// ---------------- Extract zip ----------------
+
 const extractZipStripRoot = async (zipBuffer, targetPath) => {
   const zip = await JSZip.loadAsync(zipBuffer);
   const entries = Object.keys(zip.files);
@@ -117,14 +168,17 @@ const extractZipStripRoot = async (zipBuffer, targetPath) => {
   }
 };
 
-// Health check route
+// ---------------- Health check ----------------
+
 app.get('/', (req, res) => {
   res.send('Noir backend is running');
 });
 
-// Compile
+// ---------------- /compile ----------------
+
 app.post('/compile', upload.single('file'), async (req, res) => {
-  const requestId = uuidv4();
+  const requestId = req.query.requestId || uuidv4();
+  console.log(requestId)
   const zipBuffer = req.file?.buffer;
   const projectPath = path.join(__dirname, 'uploads', requestId);
 
@@ -133,8 +187,8 @@ app.post('/compile', upload.single('file'), async (req, res) => {
   try {
     await fs.mkdirp(projectPath);
     await extractZipStripRoot(zipBuffer, projectPath);
-    await run('nargo', ['compile'], projectPath);
-    await run('nargo', ['check'], projectPath);
+    await run('nargo', ['compile'], projectPath, requestId);
+    await run('nargo', ['check'], projectPath, requestId);
 
     const targetDir = path.join(projectPath, 'target');
     const files = await fs.readdir(targetDir);
@@ -144,18 +198,21 @@ app.post('/compile', upload.single('file'), async (req, res) => {
     const json = await fs.readFile(path.join(targetDir, jsonFile), 'utf8');
     const prover = await fs.readFile(path.join(projectPath, 'Prover.toml'), 'utf8');
 
+    sendLog(requestId, 'Compilation succeeded!');
     res.json({ success: true, requestId, compiledJson: json, proverToml: prover });
   } catch (e) {
     console.error('[compile] Error:', e);
+    sendLog(requestId, `Compilation failed: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   } finally {
     await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
   }
 });
 
-// Main API to compile, prove, and generate Solidity verifier
+// ---------------- /generate-proof ----------------
+
 app.post('/generate-proof', upload.single('file'), async (req, res) => {
-  const requestId = uuidv4();
+  const requestId = req.query.requestId || uuidv4();
   const zipBuffer = req.file?.buffer;
   const projectPath = path.join(__dirname, 'uploads', requestId);
 
@@ -168,9 +225,9 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
     const proverPaths = await glob(path.join(projectPath, '**/Prover.toml'));
     if (proverPaths.length === 0) throw new Error('Prover.toml not found in uploaded zip');
     const proverPath = proverPaths[0];
-    console.log('[debug] Found Prover.toml at:', proverPath);
+    sendLog(requestId, `[debug] Found Prover.toml at: ${proverPath}`);
 
-    await run('nargo', ['execute'], projectPath);
+    await run('nargo', ['execute'], projectPath, requestId);
 
     const targetDir = path.join(projectPath, 'target');
     const files = await fs.readdir(targetDir);
@@ -180,24 +237,28 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
     const gzFile = files.find(f => f.endsWith('.gz'));
     if (!gzFile) throw new Error('Witness file (.gz) not found in target/');
     const witnessFile = `target/${gzFile}`;
-    console.log(`[generate-proof] Using witness file: ${witnessFile}`);
+    sendLog(requestId, `[generate-proof] Using witness file: ${witnessFile}`);
 
-    await run('bb', ['prove', '-b', `target/${jsonFile}`, '-w', witnessFile, '-o', 'target'], projectPath);
-    await run('bb', ['write_vk', '-b', `target/${jsonFile}`, '-o', 'target', '--oracle_hash', 'keccak'], projectPath);
-    await run('bb', ['write_solidity_verifier', '-k', 'target/vk', '-o', 'target/Verifier.sol'], projectPath);
+    await run('bb', ['prove', '-b', `target/${jsonFile}`, '-w', witnessFile, '-o', 'target'], projectPath, requestId);
+    await run('bb', ['write_vk', '-b', `target/${jsonFile}`, '-o', 'target', '--oracle_hash', 'keccak'], projectPath, requestId);
+    await run('bb', ['write_solidity_verifier', '-k', 'target/vk', '-o', 'target/Verifier.sol'], projectPath, requestId);
 
     const proof = await fs.readFile(path.join(targetDir, 'proof'), 'utf8');
     const vk = await fs.readFile(path.join(targetDir, 'vk'), 'utf8');
     const verifier = await fs.readFile(path.join(targetDir, 'Verifier.sol'), 'utf8');
 
+    sendLog(requestId, 'Proof + Verifier generated successfully.');
     res.json({ success: true, requestId, proof, vk, verifier });
   } catch (e) {
     console.error('[generate-proof] Error:', e);
+    sendLog(requestId, `generate-proof failed: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   } finally {
     await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
   }
 });
+
+// ---------------- Start ----------------
 
 app.listen(3000, () => {
   console.log('Noir backend running on port 3000');
