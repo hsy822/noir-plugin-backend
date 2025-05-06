@@ -16,7 +16,7 @@ import { WebSocketServer } from 'ws';
 
 // ---------------- WebSocket setup ----------------
 
-const wss = new WebSocketServer({ port: 8082 });
+const wss = new WebSocketServer({ port: 8082, path: '/ws/' });
 const wsClients = new Map();
 
 wss.on('connection', (ws) => {
