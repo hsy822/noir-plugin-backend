@@ -252,7 +252,7 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
     const zip = new JSZip();
     zip.file('proof', proof);
     zip.file('vk', vk);
-    zip.file('Verifier.sol', verifier);
+    zip.file('verifier/solidity/Verifier.sol', verifier);
 
     if (includeStarknetVerifier) {
       sendLog(requestId, 'Generating Starknet Cairo verifier...');
@@ -272,8 +272,7 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
       if (cairoFiles.length === 0) throw new Error('No Cairo verifier files found');
 
       for (const filePath of cairoFiles) {
-        const relPath = path.relative(rootDir, filePath);
-        zip.file(relPath, await fs.readFile(filePath));
+        zip.file(`verifier/cairo/${path.basename(filePath)}`, await fs.readFile(filePath));
       }
 
       sendLog(requestId, 'Starknet verifier added to ZIP.');
