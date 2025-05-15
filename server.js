@@ -348,7 +348,7 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
     sendLog(requestId, `generate-proof failed: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   } finally {
-    // await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
+    await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
   }
 });
 
