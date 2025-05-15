@@ -209,9 +209,58 @@ app.post('/compile', upload.single('file'), async (req, res) => {
   }
 });
 
-// ---------------- /generate-proof-with-verifier ----------------
+// ---------------- /generate-proof-with-solidity-verifier ----------------
 
 app.post('/generate-proof', upload.single('file'), async (req, res) => {
+  const requestId = req.query.requestId || uuidv4();
+  const zipBuffer = req.file?.buffer;
+  const projectPath = path.join(__dirname, 'uploads', requestId);
+
+  if (!zipBuffer) return res.status(400).json({ success: false, error: 'No file provided' });
+
+  try {
+    await fs.mkdirp(projectPath);
+    await extractZipStripRoot(zipBuffer, projectPath);
+
+    const proverPaths = await glob(path.join(projectPath, '**/Prover.toml'));
+    if (proverPaths.length === 0) throw new Error('Prover.toml not found in uploaded zip');
+    const proverPath = proverPaths[0];
+    sendLog(requestId, `[debug] Found Prover.toml at: ${proverPath}`);
+
+    await run('nargo', ['execute'], projectPath, requestId);
+
+    const targetDir = path.join(projectPath, 'target');
+    const files = await fs.readdir(targetDir);
+    const jsonFile = files.find(f => f.endsWith('.json'));
+    if (!jsonFile) throw new Error('Compiled circuit JSON not found in target/');
+
+    const gzFile = files.find(f => f.endsWith('.gz'));
+    if (!gzFile) throw new Error('Witness file (.gz) not found in target/');
+    const witnessFile = `target/${gzFile}`;
+    sendLog(requestId, `[generate-proof] Using witness file: ${witnessFile}`);
+
+    await run('bb', ['prove', '-b', `target/${jsonFile}`, '-w', witnessFile, '-o', 'target'], projectPath, requestId);
+    await run('bb', ['write_vk', '-b', `target/${jsonFile}`, '-o', 'target', '--oracle_hash', 'keccak'], projectPath, requestId);
+    await run('bb', ['write_solidity_verifier', '-k', 'target/vk', '-o', 'target/Verifier.sol'], projectPath, requestId);
+
+    const proof = await fs.readFile(path.join(targetDir, 'proof'), 'utf8');
+    const vk = await fs.readFile(path.join(targetDir, 'vk'), 'utf8');
+    const verifier = await fs.readFile(path.join(targetDir, 'Verifier.sol'), 'utf8');
+
+    sendLog(requestId, 'Proof + Verifier generated successfully.');
+    res.json({ success: true, requestId, proof, vk, verifier });
+  } catch (e) {
+    console.error('[generate-proof] Error:', e);
+    sendLog(requestId, `generate-proof failed: ${e.message}`);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
+  }
+});
+
+// ---------------- /generate-proof-with-solidity-and-cairo-verifier ----------------
+
+app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res) => {
   const requestId = req.query.requestId || uuidv4();
   const includeStarknetVerifier = req.query.includeStarknetVerifier === 'true';
   const zipBuffer = req.file?.buffer;
@@ -256,18 +305,28 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
 
     if (includeStarknetVerifier) {
       sendLog(requestId, 'Generating Starknet Cairo verifier...');
-      await run('garaga', [
-        'gen',
-        '--system',
-        'ultra_keccak_honk',
-        '--vk',
-        'target/vk',
-        '--project-name',
-        'verifier'
-      ], rootDir, requestId);
+      try {
+        const garagaPath = '/Users/sooyounghyun/Desktop/dev/garaga/venv/bin/garaga';
 
-      const verifierDir = path.join(rootDir, 'contracts', 'verifier');
+        await run(garagaPath, [
+          'gen',
+          '--system',
+          'ultra_keccak_honk',
+          '--vk',
+          'target/vk',
+          '--project-name',
+          'verifier'
+        ], rootDir, requestId);  
+      } catch (error) {
+        console.warn(`Warning: Garaga formatting failed, continuing...`);
+      }
+      console.log({rootDir})
+      
+      const verifierDir = path.join(rootDir, 'verifier', 'src');
+      console.log({verifierDir})
+
       const cairoFiles = await glob(path.join(verifierDir, '*.cairo'));
+      console.log({cairoFiles})
 
       if (cairoFiles.length === 0) throw new Error('No Cairo verifier files found');
 
@@ -288,10 +347,9 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
     sendLog(requestId, `generate-proof failed: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   } finally {
-    await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
+    // await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
   }
 });
-
 
 // ---------------- Start ----------------
 
