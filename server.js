@@ -307,8 +307,8 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
       sendLog(requestId, 'Generating Starknet Cairo verifier...');
       try {
         // const garagaPath = '/Users/sooyounghyun/Desktop/dev/garaga/venv/bin/garaga';
-        const garagaPath = '/home/ubuntu/noir-plugin-backend/garaga-venv/bin/garaga';
-        
+        const garagaPath = '/home/ubuntu/garaga-venv/bin/garaga';
+
         await run(garagaPath, [
           'gen',
           '--system',
