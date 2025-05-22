@@ -14,6 +14,9 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { WebSocketServer } from 'ws';
 
+const garagaPath = '/home/ubuntu/garaga-venv/bin/garaga';
+// const garagaPath = '/Users/sooyounghyun/Desktop/dev/garaga/venv/bin/garaga';
+
 // ---------------- WebSocket setup ----------------
 const wss = new WebSocketServer({ port: 8082, path: '/ws/' });
 const wsClients = new Map();
@@ -384,8 +387,6 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
     if (includeStarknetVerifier) {
       sendLog(requestId, '[garaga] Generating Starknet verifier...');
       try {
-        // const garagaPath = '/home/ubuntu/garaga-venv/bin/garaga';
-        const garagaPath = '/Users/sooyounghyun/Desktop/dev/garaga/venv/bin/garaga';
         await run(garagaPath, [
           'gen',
           '--system', 'ultra_keccak_honk',
