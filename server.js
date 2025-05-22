@@ -400,19 +400,19 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
       
       // regardless of error, attempt to collect .cairo files
       try {
-        const verifierDir = path.join(rootDir, 'verifier');
-
-        const allFiles = await glob(path.join(verifierDir, '**/*'), { nodir: true });
-
-        if (allFiles.length === 0) {
-          sendLog(requestId, '[warn] No files found in verifier directory to include');
-        } else {
-          sendLog(requestId, `[garaga] Adding ${allFiles.length} verifier files to zip...`);
-          for (const filePath of allFiles) {
-            const relPath = path.relative(rootDir, filePath);
-            const buffer = await fs.readFile(filePath);
-            zip.file(relPath, buffer);
-            sendLog(requestId, `[zip] Added ${relPath}`);
+        const cairoFiles = await glob(path.join(verifierDir, 'src', '**/*.cairo'));
+        for (const filePath of cairoFiles) {
+          const relative = path.relative(path.join(verifierDir, 'src'), filePath);
+          const zipPath = `verifier/cairo/src/${relative}`;
+          zip.file(zipPath, await fs.readFile(filePath));
+          sendLog(requestId, `[zip] Added Cairo source: ${zipPath}`);
+        }
+        for (const metaFile of ['Scarb.toml', '.tool-versions']) {
+          const fullPath = path.join(verifierDir, metaFile);
+          if (await fs.pathExists(fullPath)) {
+            const zipPath = `verifier/cairo/${metaFile}`;
+            zip.file(zipPath, await fs.readFile(fullPath));
+            sendLog(requestId, `[zip] Added metadata: ${zipPath}`);
           }
         }
       } catch (err) {
