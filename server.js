@@ -15,7 +15,6 @@ import { dirname } from 'path';
 import { WebSocketServer } from 'ws';
 
 // ---------------- WebSocket setup ----------------
-
 const wss = new WebSocketServer({ port: 8082, path: '/ws/' });
 const wsClients = new Map();
 
@@ -40,9 +39,15 @@ wss.on('connection', (ws) => {
 });
 
 function sendLog(requestId, msg) {
-  const ws = wsClients.get(requestId);
-  if (ws && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify({ logMsg: msg }));
+  try {
+    const ws = wsClients.get(requestId);
+    if (ws && ws.readyState === ws.OPEN) {
+      ws.send(JSON.stringify({ logMsg: msg }));
+    } else {
+      console.warn(`[sendLog] No active WebSocket for requestId=${requestId}`);
+    }
+  } catch (e) {
+    console.error(`[sendLog] Failed to send log for requestId=${requestId}:`, e.message);
   }
 }
 
@@ -72,9 +77,7 @@ app.use((err, req, res, next) => {
 });
 
 // ---------------- Run command ----------------
-
 const run = (cmd, args, cwd, requestId) => new Promise((resolve, reject) => {
-  const isMac = process.platform === 'darwin';
   const proc = spawn(cmd, args, {
     cwd,
     shell: true,
@@ -82,7 +85,7 @@ const run = (cmd, args, cwd, requestId) => new Promise((resolve, reject) => {
       ...process.env,
       PATH: [
         process.env.PATH,
-        isMac
+        process.platform === 'darwin'
           ? `${process.env.HOME}/.nargo/bin:${process.env.HOME}/.bb`
           : '/home/ubuntu/.nargo/bin:/home/ubuntu/.bb'
       ].join(':')
@@ -90,38 +93,35 @@ const run = (cmd, args, cwd, requestId) => new Promise((resolve, reject) => {
   });
 
   let stderrLog = '';
+  let stdoutLog = '';
 
   proc.stdout.on('data', (data) => {
     const log = data.toString().trim();
+    stdoutLog += log + '\n';
     console.log(`[${cmd}] stdout:`, log);
-    if (requestId) sendLog(requestId, `[stdout] ${log}`);
+    if (requestId) sendLog(requestId, `[${cmd}] stdout: ${log}`);
   });
 
   proc.stderr.on('data', (data) => {
     const log = data.toString().trim();
-    console.error(`[${cmd}] stderr:`, log);
-    if (requestId) sendLog(requestId, `[stderr] ${log}`);
     stderrLog += log + '\n';
+    console.error(`[${cmd}] stderr:`, log);
+    if (requestId) sendLog(requestId, `[${cmd}] stderr: ${log}`);
   });
 
   proc.on('close', (code) => {
-    if (code === 0) {
-      const successMsg = `[${cmd}] Completed successfully`;
-      console.log(successMsg);
-      if (requestId) sendLog(requestId, successMsg);
-      resolve();
-    } else {
-      const errMsg = `[${cmd}] Failed with code ${code}`;
-      if (requestId) sendLog(requestId, errMsg);
-      reject(new Error(errMsg + '\n' + stderrLog));
-    }
+    const msg = `[${cmd}] Completed with exit code ${code}`;
+    if (requestId) sendLog(requestId, msg);
+    code === 0 ? resolve() : reject(new Error(`${msg}\n${stderrLog}`));
   });
 
   proc.on('error', (error) => {
-    if (requestId) sendLog(requestId, `[${cmd}] error: ${error.message}`);
+    const msg = `[${cmd}] Error: ${error.message}`;
+    if (requestId) sendLog(requestId, msg);
     reject(error);
   });
 });
+
 
 // ---------------- Extract zip ----------------
 
@@ -175,7 +175,8 @@ app.get('/', (req, res) => {
 });
 
 // ---------------- /compile ----------------
-
+// ⚠️ [DEPRECATED] This endpoint is still used in production but is scheduled for removal.
+// Use `/compile-with-profiler` instead for future-proof and profiler-capable compilation.
 app.post('/compile', upload.single('file'), async (req, res) => {
   const requestId = req.query.requestId || uuidv4();
   console.log(requestId)
@@ -209,8 +210,63 @@ app.post('/compile', upload.single('file'), async (req, res) => {
   }
 });
 
-// ---------------- /generate-proof-with-solidity-verifier ----------------
+// -------------------- /compile-with-profiler --------------------
+app.post('/compile-with-profiler', upload.single('file'), async (req, res) => {
+  const requestId = req.query.requestId || uuidv4();
+  const profilers = (req.query.profiler || '').split(',').filter(Boolean);
+  const zip = new JSZip();
+  const projectPath = path.join(__dirname, 'uploads', requestId);
 
+  try {
+    await fs.mkdirp(projectPath);
+
+    const zipBuffer = req.file?.buffer;
+    if (!zipBuffer) throw new Error('No file uploaded');
+
+    await extractZipStripRoot(zipBuffer, projectPath);
+
+    await run('nargo', ['compile'], projectPath, requestId);
+    await run('nargo', ['check'], projectPath, requestId);
+
+    const targetDir = path.join(projectPath, 'target');
+    const jsonFile = (await fs.readdir(targetDir)).find(f => f.endsWith('.json'));
+    if (!jsonFile) throw new Error('Compiled JSON not found');
+
+    zip.file(`compiled/${jsonFile}`, await fs.readFile(path.join(targetDir, jsonFile)));
+
+    // ACIR opcode profiling only
+    if (profilers.includes('acir')) {
+      sendLog(requestId, '[profiler] Running ACIR opcode profiler...');
+      await run('noir-profiler', [
+        'opcodes',
+        '--artifact-path', `./target/${jsonFile}`,
+        '--output', './target'
+      ], projectPath, requestId);
+    }
+
+    // Collect .svg profiler output
+    const svgFiles = await glob(path.join(targetDir, '*_opcodes.svg'));
+    for (const filePath of svgFiles) {
+      const name = path.basename(filePath);
+      zip.file(`profiler/${name}`, await fs.readFile(filePath));
+    }
+
+    const zipBufferOut = await zip.generateAsync({ type: 'nodebuffer' });
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', `attachment; filename=compile_profiler_${requestId}.zip`);
+    res.send(zipBufferOut);
+  } catch (e) {
+    console.error('[compile-with-profiler] Error:', e);
+    sendLog(requestId, `compile-with-profiler failed: ${e.message}`);
+    res.status(500).json({ success: false, error: e.message });
+  } finally {
+    await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
+  }
+});
+
+// ---------------- /generate-proof ----------------
+// ⚠️ [DEPRECATED] This endpoint is still used in production but is scheduled for removal.
+// Use `/generate-proof-with-verifier` instead for support with optional Starknet & profiling features.
 app.post('/generate-proof', upload.single('file'), async (req, res) => {
   const requestId = req.query.requestId || uuidv4();
   const zipBuffer = req.file?.buffer;
@@ -258,11 +314,13 @@ app.post('/generate-proof', upload.single('file'), async (req, res) => {
   }
 });
 
-// ---------------- /generate-proof-with-solidity-and-cairo-verifier ----------------
-
+// -------------------- /generate-proof-with-verifier --------------------
 app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res) => {
   const requestId = req.query.requestId || uuidv4();
   const includeStarknetVerifier = req.query.includeStarknetVerifier === 'true';
+  const profilers = (req.query.profiler || '').split(',').filter(Boolean);
+  const zip = new JSZip();
+
   const zipBuffer = req.file?.buffer;
   const projectPath = path.join(__dirname, 'uploads', requestId);
 
@@ -276,76 +334,114 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
     if (proverPaths.length === 0) throw new Error('Prover.toml not found in uploaded zip');
     const rootDir = path.dirname(proverPaths[0]);
 
-    sendLog(requestId, `[debug] Found Prover.toml at: ${proverPaths[0]}`);
-
     await run('nargo', ['execute'], rootDir, requestId);
 
     const targetDir = path.join(rootDir, 'target');
     const files = await fs.readdir(targetDir);
     const jsonFile = files.find(f => f.endsWith('.json'));
-    if (!jsonFile) throw new Error('Compiled circuit JSON not found in target/');
+    if (!jsonFile) throw new Error('Compiled circuit JSON not found');
 
     const gzFile = files.find(f => f.endsWith('.gz'));
-    if (!gzFile) throw new Error('Witness file (.gz) not found in target/');
+    if (!gzFile) throw new Error('Witness file (.gz) not found');
     const witnessFile = `target/${gzFile}`;
-    sendLog(requestId, `[generate-proof] Using witness file: ${witnessFile}`);
 
     await run('bb', ['prove', '-b', `target/${jsonFile}`, '-w', witnessFile, '-o', 'target'], rootDir, requestId);
     await run('bb', ['write_vk', '-b', `target/${jsonFile}`, '-o', 'target', '--oracle_hash', 'keccak'], rootDir, requestId);
     await run('bb', ['write_solidity_verifier', '-k', 'target/vk', '-o', 'target/Verifier.sol'], rootDir, requestId);
 
+    // Gate-level profiling (requires bb prove already done)
+    // if (profilers.includes('gates')) {
+    //   sendLog(requestId, '[profiler] Running gate-level profiler...');
+    //   try {
+    //     await run('noir-profiler', [
+    //       'gates',
+    //       '--artifact-path', `./target/${jsonFile}`,
+    //       '--backend-path', 'bb',
+    //       '--output', './target',
+    //       '--', '--include_gates_per_opcode'
+    //     ], rootDir, requestId);
+    //   } catch (e) {
+    //     sendLog(requestId, '[warn] Gate-level profiling failed: ' + e.message);
+    //   }
+    // }
+
+    // Execution trace profiling (requires Prover.toml)
+    if (profilers.includes('exec')) {
+      sendLog(requestId, '[profiler] Running execution trace profiler...');
+      try {
+        await run('noir-profiler', [
+          'execution-opcodes',
+          '--artifact-path', `./target/${jsonFile}`,
+          '--prover-toml-path', 'Prover.toml',
+          '--output', './target'
+        ], rootDir, requestId);
+      } catch (e) {
+        sendLog(requestId, '[warn] Execution trace profiling failed: ' + e.message);
+      }
+    }
+
+    // (Optional) Starknet Cairo verifier
+    if (includeStarknetVerifier) {
+      sendLog(requestId, '[garaga] Generating Starknet verifier...');
+      try {
+        // const garagaPath = '/home/ubuntu/garaga-venv/bin/garaga';
+        const garagaPath = '/Users/sooyounghyun/Desktop/dev/garaga/venv/bin/garaga';
+        await run(garagaPath, [
+          'gen',
+          '--system', 'ultra_keccak_honk',
+          '--vk', 'target/vk',
+          '--project-name', 'verifier'
+        ], rootDir, requestId);
+        sendLog(requestId, '[garaga] Garaga executed successfully');
+      } catch (e) {
+        sendLog(requestId, '[garaga] Garaga execution returned error (likely from scarb fmt), continuing...');
+      }
+      
+      // regardless of error, attempt to collect .cairo files
+      try {
+        const verifierDir = path.join(rootDir, 'verifier');
+
+        const allFiles = await glob(path.join(verifierDir, '**/*'), { nodir: true });
+
+        if (allFiles.length === 0) {
+          sendLog(requestId, '[warn] No files found in verifier directory to include');
+        } else {
+          sendLog(requestId, `[garaga] Adding ${allFiles.length} verifier files to zip...`);
+          for (const filePath of allFiles) {
+            const relPath = path.relative(rootDir, filePath);
+            const buffer = await fs.readFile(filePath);
+            zip.file(relPath, buffer);
+            sendLog(requestId, `[zip] Added ${relPath}`);
+          }
+        }
+      } catch (err) {
+        sendLog(requestId, '[garaga] Failed to include Cairo verifier files: ' + err.message);
+      }
+    }
+
+    // Core output files
     const proof = await fs.readFile(path.join(targetDir, 'proof'));
     const vk = await fs.readFile(path.join(targetDir, 'vk'));
     const verifier = await fs.readFile(path.join(targetDir, 'Verifier.sol'));
 
-    const zip = new JSZip();
     zip.file('proof', proof);
     zip.file('vk', vk);
     zip.file('verifier/solidity/Verifier.sol', verifier);
 
-    if (includeStarknetVerifier) {
-      sendLog(requestId, 'Generating Starknet Cairo verifier...');
-      try {
-        // const garagaPath = '/Users/sooyounghyun/Desktop/dev/garaga/venv/bin/garaga';
-        const garagaPath = '/home/ubuntu/garaga-venv/bin/garaga';
-
-        await run(garagaPath, [
-          'gen',
-          '--system',
-          'ultra_keccak_honk',
-          '--vk',
-          'target/vk',
-          '--project-name',
-          'verifier'
-        ], rootDir, requestId);  
-      } catch (error) {
-        console.warn(`Warning: Garaga formatting failed, continuing...`);
-      }
-      console.log({rootDir})
-      
-      const verifierDir = path.join(rootDir, 'verifier', 'src');
-      console.log({verifierDir})
-
-      const cairoFiles = await glob(path.join(verifierDir, '*.cairo'));
-      console.log({cairoFiles})
-
-      if (cairoFiles.length === 0) throw new Error('No Cairo verifier files found');
-
-      for (const filePath of cairoFiles) {
-        zip.file(`verifier/cairo/${path.basename(filePath)}`, await fs.readFile(filePath));
-      }
-
-      sendLog(requestId, 'Starknet verifier added to ZIP.');
+    // Collect .svg profiler output
+    const svgFiles = await glob(path.join(targetDir, '*.svg'));
+    for (const filePath of svgFiles) {
+      const name = path.basename(filePath);
+      zip.file(`profiler/${name}`, await fs.readFile(filePath));
     }
 
     const zipBufferOut = await zip.generateAsync({ type: 'nodebuffer' });
-
     res.set('Content-Type', 'application/zip');
     res.set('Content-Disposition', `attachment; filename=verifier_${requestId}.zip`);
     res.send(zipBufferOut);
   } catch (e) {
-    console.error('[generate-proof] Error:', e);
-    sendLog(requestId, `generate-proof failed: ${e.message}`);
+    console.error('[generate-proof-with-verifier] Error:', e);
+    sendLog(requestId, `generate-proof-with-verifier failed: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   } finally {
     await fs.remove(projectPath).catch(err => console.error('cleanup error:', err));
@@ -353,7 +449,6 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
 });
 
 // ---------------- Start ----------------
-
 app.listen(3000, () => {
   console.log('Noir backend running on port 3000');
 });
