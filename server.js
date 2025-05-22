@@ -400,6 +400,8 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
       
       // regardless of error, attempt to collect .cairo files
       try {
+        const verifierDir = path.join(rootDir, 'verifier');
+        
         const cairoFiles = await glob(path.join(verifierDir, 'src', '**/*.cairo'));
         for (const filePath of cairoFiles) {
           const relative = path.relative(path.join(verifierDir, 'src'), filePath);
