@@ -24,12 +24,12 @@ API server for compiling and proving Noir circuits with real-time log streaming 
   - Cairo verifier (optional)
   - Execution trace flamegraph (optional)
 
-## 🔁 WebSocket Logs
+## WebSocket Logs
 
 - Connect to `/ws/` and send `{ "requestId": "<uuid>" }`
 - Receive logs in real-time as JSON `{ logMsg: "..." }`
 
-## 🧪 Try It
+## Try It
 
 - [Test UI](https://github.com/hsy822/noir-plugin-backend/blob/main/noir-tester.html)
 - Upload your zipped Noir project and monitor logs live
@@ -41,7 +41,7 @@ API server for compiling and proving Noir circuits with real-time log streaming 
 
 ## Full Docs
 
-👉 [Notion API Specification](https://www.notion.so/hyunsooyoung/noir-plugin-backend-1de572c501788061b012f746415909a9)
+[Notion API Specification](https://www.notion.so/hyunsooyoung/noir-plugin-backend-1de572c501788061b012f746415909a9)
 
 ---
 
