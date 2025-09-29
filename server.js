@@ -61,7 +61,7 @@ const __dirname = dirname(__filename);
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 const app = express();
@@ -183,6 +183,7 @@ app.get('/', (req, res) => {
 app.post('/compile', upload.single('file'), async (req, res) => {
   const requestId = req.query.requestId || uuidv4();
   console.log(requestId)
+  console.log('Uploaded file size:', req.file?.size, 'bytes');
   const zipBuffer = req.file?.buffer;
   const projectPath = path.join(__dirname, 'uploads', requestId);
 
@@ -219,7 +220,7 @@ app.post('/compile-with-profiler', upload.single('file'), async (req, res) => {
   const profilers = (req.query.profiler || '').split(',').filter(Boolean);
   const zip = new JSZip();
   const projectPath = path.join(__dirname, 'uploads', requestId);
-
+  console.log('Uploaded file size:', req.file?.size, 'bytes');
   try {
     await fs.mkdirp(projectPath);
 
