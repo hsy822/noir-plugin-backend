@@ -52,11 +52,11 @@
 
   <script>
     // For production:
-    let ws = new WebSocket('wss://noir.zkdev.net/ws/');
-    let endpoint = 'https://noir.zkdev.net';
+    // let ws = new WebSocket('wss://noir.zkdev.net/ws/');
+    // let endpoint = 'https://noir.zkdev.net';
     // For local development:
-    // let ws = new WebSocket('ws://localhost:8082/ws/');
-    // let endpoint = 'http://localhost:3000';
+    let ws = new WebSocket('ws://localhost:8082/ws/');
+    let endpoint = 'http://localhost:3000';
 
     const requestId = crypto.randomUUID();
 

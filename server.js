@@ -61,7 +61,7 @@ const __dirname = dirname(__filename);
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 const app = express();
@@ -74,7 +74,7 @@ app.use(cors({
 }));
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ success: false, error: 'Uploaded file is too large (max 5MB).' });
+    return res.status(413).json({ success: false, error: 'Uploaded file is too large (max 20MB).' });
   }
   next(err);
 });
@@ -192,16 +192,24 @@ app.post('/compile', upload.single('file'), async (req, res) => {
   try {
     await fs.mkdirp(projectPath);
     await extractZipStripRoot(zipBuffer, projectPath);
-    await run('nargo', ['compile'], projectPath, requestId);
-    await run('nargo', ['check'], projectPath, requestId);
 
-    const targetDir = path.join(projectPath, 'target');
+    const nargoTomlPaths = await glob(path.join(projectPath, '**/Nargo.toml'));
+    if (nargoTomlPaths.length === 0) {
+      throw new Error('Cannot find Nargo.toml');
+    }
+    const rootDir = path.dirname(nargoTomlPaths[0]);
+    sendLog(requestId, `[debug] root: ${rootDir}`);
+
+    await run('nargo', ['compile'], rootDir, requestId);
+    await run('nargo', ['check'], rootDir, requestId);
+
+    const targetDir = path.join(rootDir, 'target');
     const files = await fs.readdir(targetDir);
     const jsonFile = files.find(f => f.endsWith('.json'));
     if (!jsonFile) throw new Error('Compiled JSON file not found');
 
     const json = await fs.readFile(path.join(targetDir, jsonFile), 'utf8');
-    const prover = await fs.readFile(path.join(projectPath, 'Prover.toml'), 'utf8');
+    const prover = await fs.readFile(path.join(rootDir, 'Prover.toml'), 'utf8');
 
     sendLog(requestId, 'Compilation succeeded!');
     res.json({ success: true, requestId, compiledJson: json, proverToml: prover });
