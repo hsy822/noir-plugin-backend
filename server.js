@@ -182,23 +182,31 @@ app.get('/', (req, res) => {
 // Use `/compile-with-profiler` instead for future-proof and profiler-capable compilation.
 app.post('/compile', upload.single('file'), async (req, res) => {
   const requestId = req.query.requestId || uuidv4();
-  console.log(requestId)
-  console.log('Uploaded file size:', req.file?.size, 'bytes');
-  const zipBuffer = req.file?.buffer;
   const projectPath = path.join(__dirname, 'uploads', requestId);
-
+  
+  console.log(`[${requestId}] New compile request.`);
+  
+  const zipBuffer = req.file?.buffer;
   if (!zipBuffer) return res.status(400).json({ success: false, error: 'No file provided' });
 
   try {
     await fs.mkdirp(projectPath);
     await extractZipStripRoot(zipBuffer, projectPath);
 
+    sendLog(requestId, '[debug] --- Extracted File Structure ---');
+    await run('ls', ['-R'], projectPath, requestId); 
+    sendLog(requestId, '[debug] ---------------------------------');
+
     const nargoTomlPaths = await glob(path.join(projectPath, '**/Nargo.toml'));
+    
+    sendLog(requestId, `[debug] Nargo.toml search result: ${JSON.stringify(nargoTomlPaths)}`);
+
     if (nargoTomlPaths.length === 0) {
-      throw new Error('Cannot find Nargo.toml');
+      throw new Error('Nargo.toml not found in the uploaded project.');
     }
     const rootDir = path.dirname(nargoTomlPaths[0]);
-    sendLog(requestId, `[debug] root: ${rootDir}`);
+
+    sendLog(requestId, `[debug] Determined project root (cwd) for nargo: ${rootDir}`);
 
     await run('nargo', ['compile'], rootDir, requestId);
     await run('nargo', ['check'], rootDir, requestId);
@@ -209,12 +217,15 @@ app.post('/compile', upload.single('file'), async (req, res) => {
     if (!jsonFile) throw new Error('Compiled JSON file not found');
 
     const json = await fs.readFile(path.join(targetDir, jsonFile), 'utf8');
-    const prover = await fs.readFile(path.join(rootDir, 'Prover.toml'), 'utf8');
+    const proverTomlPath = path.join(rootDir, 'Prover.toml');
+    const prover = await fs.pathExists(proverTomlPath)
+      ? await fs.readFile(proverTomlPath, 'utf8')
+      : '';
 
     sendLog(requestId, 'Compilation succeeded!');
     res.json({ success: true, requestId, compiledJson: json, proverToml: prover });
   } catch (e) {
-    console.error('[compile] Error:', e);
+    console.error(`[${requestId}] Compile Error:`, e);
     sendLog(requestId, `Compilation failed: ${e.message}`);
     res.status(500).json({ success: false, error: e.message });
   } finally {
