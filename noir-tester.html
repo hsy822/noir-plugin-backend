@@ -7,44 +7,14 @@
 <body>
   <h1>Noir API Test Console</h1>
 
-  <!-- API selector -->
   <label for="api">Choose API:</label>
   <select id="api">
-    <option value="compile-with-profiler">/compile-with-profiler</option>
+    <option value="compile">/compile</option>
     <option value="generate-proof-with-verifier">/generate-proof-with-verifier</option>
   </select>
 
   <br><br>
 
-  <!-- Shown only for /generate-proof-with-verifier -->
-  <div id="starknet-option">
-    <label>
-      <input type="checkbox" id="includeStarknetVerifier" />
-      includeStarknetVerifier (for Starknet Cairo verifier)
-    </label>
-  </div>
-
-  <br>
-
-  <!-- Profiling checkboxes -->
-  <h3>Profiling Options</h3>
-
-  <!-- For compile-with-profiler only -->
-  <div id="profiler-acir" class="profiler-option">
-    <label><input type="checkbox" id="profAcir" /> ACIR opcodes</label>
-  </div>
-
-  <!-- For generate-proof-with-verifier only -->
-  <!-- <div id="profiler-gates" class="profiler-option">
-    <label><input type="checkbox" id="profGate" /> Gate-level (requires bb prove)</label>
-  </div> -->
-  <div id="profiler-exec" class="profiler-option">
-    <label><input type="checkbox" id="profExec" /> Execution trace (Prover.toml required)</label>
-  </div>
-
-  <br>
-
-  <!-- Upload file and trigger request -->
   <input type="file" id="fileInput" />
   <button type="button" onclick="upload()">Upload and Test</button>
 
@@ -88,38 +58,10 @@
       };
     }
 
-    // Control profiler visibility based on selected API
-    const profilerOptions = {
-      'compile-with-profiler': ['profiler-acir'],
-      // 'generate-proof-with-verifier': ['profiler-gates', 'profiler-exec']
-      'generate-proof-with-verifier': ['profiler-exec']
-    };
-
-    document.getElementById('api').addEventListener('change', () => {
-      const selected = document.getElementById('api').value;
-
-      // Show/hide Starknet option
-      document.getElementById('starknet-option').style.display =
-        selected === 'generate-proof-with-verifier' ? 'block' : 'none';
-
-      // Show only valid profiler checkboxes
-      document.querySelectorAll('.profiler-option').forEach(el => el.style.display = 'none');
-      (profilerOptions[selected] || []).forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = 'block';
-      });
-    });
-
-    // Trigger default visibility on load
-    window.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('api').dispatchEvent(new Event('change'));
-    });
-
     // Handle file upload and API call
     async function upload() {
       const fileInput = document.getElementById('fileInput');
       const api = document.getElementById('api').value;
-      const includeStarknet = document.getElementById('includeStarknetVerifier').checked;
       const file = fileInput.files[0];
 
       if (!file) {
@@ -129,18 +71,24 @@
 
       if (!ws || ws.readyState !== WebSocket.OPEN) setupWebSocket();
 
-      // Collect profiler flags
-      const profilerFlags = [];
-      if (document.getElementById('profAcir').checked) profilerFlags.push('acir');
-      // if (document.getElementById('profGate').checked) profilerFlags.push('gates');
-      if (document.getElementById('profExec').checked) profilerFlags.push('exec');
-
       // Build query string
       let queryString = `requestId=${requestId}`;
+
+      /*
+      // 1. Profiler 
+      // UI: <div id="profiler-acir" ...>, <div id="profiler-exec" ...>
+      const profilerFlags = [];
+      if (document.getElementById('profAcir')?.checked) profilerFlags.push('acir');
+      if (document.getElementById('profExec')?.checked) profilerFlags.push('exec');
       if (profilerFlags.length > 0) queryString += `&profiler=${profilerFlags.join(',')}`;
+
+      // 2. Starknet Verifier 
+      // UI: <div id="starknet-option" ...>
+      const includeStarknet = document.getElementById('includeStarknetVerifier')?.checked;
       if (api === 'generate-proof-with-verifier' && includeStarknet) {
         queryString += '&includeStarknetVerifier=true';
       }
+      */
 
       const formData = new FormData();
       formData.append('file', file);
