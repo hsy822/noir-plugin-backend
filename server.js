@@ -17,7 +17,13 @@ import { WebSocketServer } from 'ws';
 import { UltraHonkBackend } from '@aztec/bb.js';
 import { Buffer } from 'buffer';
 
-const VERIFY_SCRIPT_CONTENT = `/* eslint-disable @typescript-eslint/no-var-requires */
+const VERIFY_SCRIPT_CONTENT = `/* * Remix Script Runner Configuration (Required before running!):
+ * 1. Click the dropdown arrow next to the 'Run script' button in the top left of the editor.
+ * 2. Select 'Open script configuration'.
+ * 3. In the configuration modal or panel, choose 'Noir' as the execution environment.
+ * 4. Close the configuration and then click 'Run script'.
+ */
+/* eslint-disable @typescript-eslint/no-var-requires */
 const { expect } = require('chai');
 import { UltraHonkBackend } from '@aztec/bb.js';
 
@@ -93,7 +99,9 @@ describe('JS Verification of Backend Proof', () => {
     // when the proof was generated to ensure compatibility.
     const verified = await backend.verifyProof({ proof: proofBytes, publicInputs }, { keccak: true });
     
-    console.log('Verification result:', verified);
+    console.log('---------------------------');
+    console.log(\`Verification result: \${verified}\`);
+    console.log('---------------------------');
 
     // Use the Chai \`expect\` function to assert that the verification result is true.
     // If \`verified\` is false, the test will fail and display the error message
@@ -393,8 +401,7 @@ app.post('/generate-proof-with-verifier', upload.single('file'), async (req, res
       (input) => input.toString().padStart(64, '0')
     );
 
-    zip.file('proof.bin', Buffer.from(proofData.proof));
-    zip.file('vk.bin', Buffer.from(vkBin));
+    zip.file('vk', Buffer.from(vkBin));
     zip.file('verifier/solidity/Verifier.sol', verifierSol);
     zip.file('program.json', JSON.stringify(circuitJson, null, 2));
     
